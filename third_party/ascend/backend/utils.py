@@ -299,6 +299,39 @@ def _enable_dump_memory_info() -> bool:
     return os.getenv("TRITON_MEMORY_DISPLAY", "false").lower() in ("true", "1")
 
 
+def _get_torch_npu_acl_inc_dirs():
+    """torch_npu 2.13 bundles newer ACL headers (aclmdlRICondHandle etc.) under
+    include/third_party/acl/inc/acl/. Angle-bracket <acl/acl.h> lookup is
+    first-(-I)-wins, so this must precede CANN's -I to resolve against the
+    bundled headers instead of CANN 9.1.0-beta.1's older ones (which lack
+    aclmdlRICondHandle).
+
+    We cannot simply add -I{torch_npu}/include/third_party/acl/inc because
+    that directory also ships a stub profiling/prof_common.h (missing
+    MsprofReporterCallback) which would shadow CANN's real profiling headers.
+
+    Solution: create a thin wrapper dir containing only an 'acl' symlink,
+    so <acl/*.h> resolves to torch_npu's bundled version while profiling/
+    headers are unaffected."""
+    try:
+        import torch_npu
+    except Exception:
+        return []
+    base = os.path.dirname(os.path.realpath(torch_npu.__file__))
+    acl_inc = os.path.join(base, "include", "third_party", "acl", "inc")
+    acl_dir = os.path.join(acl_inc, "acl")
+    if not os.path.isdir(acl_dir):
+        return []
+    # Stable wrapper dir: symlink only acl/, not profiling/ or other subdirs
+    wrapper = os.path.join("/tmp", "triton_npu_acl_" +
+                           hashlib.md5(acl_inc.encode()).hexdigest()[:12])
+    link = os.path.join(wrapper, "acl")
+    if not os.path.islink(link):
+        os.makedirs(wrapper, exist_ok=True)
+        os.symlink(acl_dir, link)
+    return [f"-I{wrapper}"]
+
+
 def _get_cxx():
     cxx = os.environ.get("CC")
     if cxx is None:
@@ -332,6 +365,7 @@ def _build_npu_ext(obj_name: str, header_or_src_path, src_path=None, *, kernel_l
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
     cc_cmd += [f"-I{py_include_dir}"]
     cc_cmd += [f"-I{os.path.dirname(os.path.realpath(__file__))}"]
+    cc_cmd += _get_torch_npu_acl_inc_dirs()  # torch_npu bundled ACL headers — BEFORE CANN (-I order matters)
     asc_path = _get_ascend_path()
     if header_path is not None:
         cc_cmd += [f"-I{os.path.dirname(header_path)}"]
