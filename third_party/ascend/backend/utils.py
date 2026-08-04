@@ -386,6 +386,25 @@ def _get_cxx():
     return cxx
 
 
+def _get_torch_npu_acl_inc_dirs():
+    """Return torch_npu's bundled ACL header include dir(s), placed BEFORE CANN.
+
+    torch_npu 2.13 ships newer ACL headers (with aclmdlRICondHandle /
+    aclmdlRICondTaskParams) under include/third_party/acl/inc/. Without this
+    -I placed before CANN's, <acl/acl.h> resolves to CANN's older acl.h which
+    lacks those types, breaking AclInterface.h (include-order conflict).
+    """
+    try:
+        import torch_npu
+    except Exception:
+        return []
+    base = os.path.dirname(os.path.realpath(torch_npu.__file__))
+    acl_inc = os.path.join(base, "include", "third_party", "acl", "inc")
+    if os.path.isdir(os.path.join(acl_inc, "acl")):
+        return [f"-I{acl_inc}"]
+    return []
+
+
 def _build_npu_ext(obj_name: str, header_or_src_path, src_path=None, *, kernel_launcher="torch",
                    precompile=False) -> str:
     header_path = None
@@ -419,6 +438,12 @@ def _build_npu_ext(obj_name: str, header_or_src_path, src_path=None, *, kernel_l
             f"-I{os.path.join(asc_path, 'pkg_inc')}",
             f"-I{os.path.join(asc_path, 'pkg_inc/profiling')}",
         ]
+
+    # torch_npu's bundled ACL headers (with aclmdlRICond* types) MUST come after
+    # CANN's pkg_inc (which owns profiling/) but BEFORE CANN's include/ (which
+    # owns the older acl/). Otherwise profiling/ gets shadowed (MsprofReporterCallback)
+    # or acl/ stays old (aclmdlRICondTaskParams). torch_npu inc has both acl/ and profiling/.
+    cc_cmd += _get_torch_npu_acl_inc_dirs()
 
     cc_cmd += [
         f"-I{os.path.join(asc_path, 'include')}",
