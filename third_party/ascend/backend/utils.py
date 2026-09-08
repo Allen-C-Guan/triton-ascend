@@ -300,15 +300,16 @@ def _enable_dump_memory_info() -> bool:
 
 
 def _get_torch_npu_acl_inc_dirs():
-    """torch_npu 2.13 bundles newer ACL headers (aclmdlRICondHandle etc.) under
-    include/third_party/acl/inc/acl/. Angle-bracket <acl/acl.h> lookup is
-    first-(-I)-wins, so this must precede CANN's -I to resolve against the
-    bundled headers instead of CANN 9.1.0-beta.1's older ones (which lack
-    aclmdlRICondHandle).
+    """torch_npu bundles its own ACL headers; angle-bracket <acl/acl.h> lookup
+    is first-(-I)-wins, so this must precede CANN's -I to resolve against the
+    bundled set. Two wheel layouts:
+      - new (torch_npu master, post "CANN ACL headers decouple"): full set at
+        include/acl/; the old include/third_party/acl/inc/acl/ is a decoupled
+        subset lacking aclrtStream/aclrtDrvMemHandle/aclprofStepInfo
+      - old: full set at include/third_party/acl/inc/acl/
 
-    We cannot simply add -I{torch_npu}/include/third_party/acl/inc because
-    that directory also ships a stub profiling/prof_common.h (missing
-    MsprofReporterCallback) which would shadow CANN's real profiling headers.
+    We cannot simply -I the parent directory because it also ships a stub
+    profiling/ (and other) headers which would shadow CANN's real ones.
 
     Solution: create a thin wrapper dir containing only an 'acl' symlink,
     so <acl/*.h> resolves to torch_npu's bundled version while profiling/
@@ -318,13 +319,14 @@ def _get_torch_npu_acl_inc_dirs():
     except Exception:
         return []
     base = os.path.dirname(os.path.realpath(torch_npu.__file__))
-    acl_inc = os.path.join(base, "include", "third_party", "acl", "inc")
-    acl_dir = os.path.join(acl_inc, "acl")
+    acl_dir = os.path.join(base, "include", "acl")
+    if not os.path.isdir(acl_dir):  # old layout fallback
+        acl_dir = os.path.join(base, "include", "third_party", "acl", "inc", "acl")
     if not os.path.isdir(acl_dir):
         return []
     # Stable wrapper dir: symlink only acl/, not profiling/ or other subdirs
     wrapper = os.path.join("/tmp", "triton_npu_acl_" +
-                           hashlib.md5(acl_inc.encode()).hexdigest()[:12])
+                           hashlib.md5(acl_dir.encode()).hexdigest()[:12])
     link = os.path.join(wrapper, "acl")
     if not os.path.islink(link):
         os.makedirs(wrapper, exist_ok=True)
